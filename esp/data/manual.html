@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Manual Control</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/script.js"></script>
+</head>
+<body>
+  <div class="navbar">
+    <a href="/">Home</a>
+    <a class="active" href="/manual">Manual</a>
+    <a href="/settings">Settings</a>
+    <a href="/calibration">Calibration</a>
+    <button onclick="toggleTheme()" class="theme-btn">Toggle Theme</button>
+  </div>
+
+  <div class="container">
+    <h1>Manual Blind Control</h1>
+    <input type="range" min="0" max="100" id="positionSlider" />
+    <p>Position: <span id="positionValue">50</span>%</p>
+    <button onclick="setPosition()">Set Position</button>
+  </div>
+
+  <script>
+    const slider = document.getElementById("positionSlider");
+    const posValue = document.getElementById("positionValue");
+
+    slider.oninput = () => posValue.innerText = slider.value;
+
+    fetch('/status')
+      .then(res => res.json())
+      .then(data => {
+        slider.value = data.manual_position;
+        posValue.innerText = data.manual_position;
+      });
+  </script>
+</body>
+</html>

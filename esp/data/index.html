@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Home - Vertical Blinds</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/script.js"></script>
+</head>
+<body>
+  <div class="navbar">
+    <a class="active" href="/">Home</a>
+    <a href="/manual">Manual</a>
+    <a href="/settings">Settings</a>
+    <a href="/calibration">Calibration</a>
+    <button onclick="toggleTheme()" class="theme-btn">Toggle Theme</button>
+  </div>
+  
+  <div class="container">
+    <h1>System Overview</h1>
+    <p><b>Mode:</b> <span id="mode">-</span></p>
+    <p><b>Blinds Status:</b> <span id="blinds">-</span></p>
+    <h3>Light Sensors</h3>
+    <ul>
+      <li>Top Left: <span id="sensor0">-</span></li>
+      <li>Top Right: <span id="sensor1">-</span></li>
+      <li>Bottom Left: <span id="sensor2">-</span></li>
+      <li>Bottom Right: <span id="sensor3">-</span></li>
+    </ul>
+  </div>
+
+  <script>
+    fetchStatus();
+    setInterval(fetchStatus, 5000);
+  </script>
+</body>
+</html>
