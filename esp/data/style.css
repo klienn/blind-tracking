@@ -1,55 +1,110 @@
+/* Color Variables */
+:root {
+  --bg-color: #ffffff;
+  --text-color: #000000;
+  --nav-bg: #f0f0f0;
+  --hover-bg: #e0e0e0;
+  --active-bg: #cccccc;
+}
+
+body.dark {
+  --bg-color: #121212;
+  --text-color: #ffffff;
+  --nav-bg: #333333;
+  --hover-bg: #444444;
+  --active-bg: #555555;
+}
+
+/* Reset basic elements */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
 body {
-    font-family: Arial, sans-serif;
-    background: var(--bg-color);
-    color: var(--text-color);
-    margin: 0;
+  font-family: Arial, sans-serif;
+  background: var(--bg-color);
+  color: var(--text-color);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Navbar */
+.navbar {
+  background: var(--nav-bg);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 10px;
+  gap: 10px;
+}
+
+.navbar a, .theme-btn {
+  text-decoration: none;
+  padding: 10px 15px;
+  color: var(--text-color);
+  background: transparent;
+  border: none;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 5px;
+}
+
+.navbar a:hover, .theme-btn:hover {
+  background: var(--hover-bg);
+}
+
+.navbar .active {
+  background-color: var(--active-bg);
+}
+
+/* Main container */
+.container {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 20px;
+}
+
+/* Content Card */
+.content {
+  width: 100%;
+  max-width: 500px;
+  background: var(--nav-bg);
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+/* Form elements */
+input[type="range"],
+input[type="number"],
+button {
+  width: 100%;
+  margin-top: 10px;
+  margin-bottom: 15px;
+  padding: 10px;
+  border: 1px solid var(--hover-bg);
+  border-radius: 5px;
+  font-size: 1rem;
+}
+
+/* List elements */
+ul {
+  list-style: none;
+  margin-top: 10px;
+}
+
+ul li {
+  margin-bottom: 8px;
+}
+
+/* Responsive tweaks */
+@media (max-width: 600px) {
+  .content {
+    padding: 15px;
   }
-  
-  .navbar {
-    background: var(--nav-bg);
-    overflow: hidden;
-    padding: 10px;
-  }
-  
-  .navbar a, .theme-btn {
-    float: left;
-    display: block;
-    color: var(--text-color);
-    text-align: center;
-    padding: 10px;
-    text-decoration: none;
-  }
-  
-  .navbar a:hover, .theme-btn:hover {
-    background-color: var(--hover-bg);
-  }
-  
-  .active {
-    background-color: var(--active-bg);
-  }
-  
-  .container {
-    padding: 20px;
-  }
-  
-  input, button {
-    margin: 5px 0;
-    padding: 8px;
-  }
-  
-  :root {
-    --bg-color: #ffffff;
-    --text-color: #000000;
-    --nav-bg: #cccccc;
-    --hover-bg: #dddddd;
-    --active-bg: #bbbbbb;
-  }
-  
-  body.dark {
-    --bg-color: #121212;
-    --text-color: #ffffff;
-    --nav-bg: #333333;
-    --hover-bg: #444444;
-    --active-bg: #555555;
-  }
-  
+}
