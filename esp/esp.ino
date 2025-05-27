@@ -1,8 +1,3 @@
-/*
- * Light Tracking Vertical Blind System (Optimized)
- * - ESP32 + 2x ULN2003 + ADS1115 + 4x Photoresistors + 2x 28BYJ-48
- */
-
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
 #include <AccelStepper.h>
@@ -10,17 +5,12 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 
-// Wi-Fi credentials
-const char *ssid = "scam ni";
-const char *password = "Walakokabalo0123!";
-
-// Web server
+const char* ssid = "scam ni";
+const char* password = "Walakokabalo0123!";
 AsyncWebServer server(80);
-
-// ADS1115 setup
 Adafruit_ADS1115 ads;
 
-// Motor pins
+// Stepper Motor Pins
 #define IN1_1 19
 #define IN2_1 18
 #define IN3_1 5
@@ -29,52 +19,307 @@ Adafruit_ADS1115 ads;
 #define IN2_2 4
 #define IN3_2 2
 #define IN4_2 15
+#define IN1_3 26
+#define IN2_3 25
+#define IN3_3 33
+#define IN4_3 32
 
-// Stepper motors
-AccelStepper stepper1(AccelStepper::HALF4WIRE, IN1_1, IN3_1, IN2_1, IN4_1);
-AccelStepper stepper2(AccelStepper::HALF4WIRE, IN1_2, IN3_2, IN2_2, IN4_2);
+#define LIMIT_SWITCH_OPEN 27
+#define LIMIT_SWITCH_CLOSED 14
 
-// System variables
-#define SENSOR_READ_INTERVAL 5000
-unsigned long lastSensorReadTime = 0;
+AccelStepper stepper1(AccelStepper::HALF4WIRE, IN1_1, IN3_1, IN2_1, IN4_1);  // tracking
+AccelStepper stepper2(AccelStepper::HALF4WIRE, IN1_2, IN3_2, IN2_2, IN4_2);  // blind pull
+AccelStepper stepper3(AccelStepper::HALF4WIRE, IN1_3, IN3_3, IN2_3, IN4_3);  // blind pull (reverse)
 
-int16_t topLeft = 0, topRight = 0, bottomLeft = 0, bottomRight = 0;
-
-#define TOP_LEFT_SENSOR 0
-#define TOP_RIGHT_SENSOR 1
-#define BOTTOM_LEFT_SENSOR 2
-#define BOTTOM_RIGHT_SENSOR 3
-
-#define MAX_MOTOR_SPEED 500
-#define MAX_MOTOR_ACCEL 100
 #define STEPS_PER_REVOLUTION 2048
-int maxSteps = STEPS_PER_REVOLUTION * 2;
+#define MAX_MOTOR_SPEED 1200
+#define MAX_MOTOR_ACCEL 200
+#define SENSOR_READ_INTERVAL 5000
 
-int openThreshold = 5000;
-int closeThreshold = 20000;
+int maxStepsMotor1 = STEPS_PER_REVOLUTION * 9; // 1080 degrees
+bool motor1Reverse = true;
+
+const float MOTOR_TO_BLIND_ANGLE_MULTIPLIER = 90.0 / 1080.0; // mapping from motor rotation to real blind angle
 
 enum SystemMode { MODE_AUTO, MODE_MANUAL, MODE_CALIBRATION };
 SystemMode currentMode = MODE_AUTO;
-SystemMode lastMode = MODE_AUTO;
-bool blindsClosed = false;
+
+enum BlindDirection { BLIND_NONE, BLIND_OPENING, BLIND_CLOSING };
+BlindDirection blindDirection = BLIND_NONE;
+
+String getBlindStatusString() {
+  if (isBlindFullyClosed()) return "Closed";
+  else if (isBlindFullyOpen()) return "Open";
+  else if (blindDirection == BLIND_OPENING) return "Opening";
+  else if (blindDirection == BLIND_CLOSING) return "Closing";
+  return "Unknown";
+}
+
+int16_t ir1 = 0, ir2 = 0, ir3 = 0, ir4 = 0;
+unsigned long lastSensorReadTime = 0;
+
+bool isBlindFullyClosed() {
+  static bool stableState = false;
+  static bool lastReading = false;
+  static unsigned long lastChangeTime = 0;
+
+  bool reading = digitalRead(LIMIT_SWITCH_CLOSED) == LOW;
+  if (reading != lastReading) {
+    lastChangeTime = millis();
+    lastReading = reading;
+  }
+  if (millis() - lastChangeTime > 20) stableState = reading;
+  return stableState;
+}
+
+bool isBlindFullyOpen() {
+  static bool stableState = false;
+  static bool lastReading = false;
+  static unsigned long lastChangeTime = 0;
+
+  bool reading = digitalRead(LIMIT_SWITCH_OPEN) == LOW;
+  if (reading != lastReading) {
+    lastChangeTime = millis();
+    lastReading = reading;
+  }
+  if (millis() - lastChangeTime > 20) stableState = reading;
+  return stableState;
+}
+
+void setMotorTargetPosition(int motorNumber, int percentage) {
+  long steps = map(percentage, 0, 100, 0, maxStepsMotor1);
+  if (motorNumber == 1 && motor1Reverse) steps = maxStepsMotor1 - steps;
+  if (motorNumber == 1) stepper1.moveTo(steps);
+}
+
+void readLightSensors() {
+  ir1 = ads.readADC_SingleEnded(0);
+  ir2 = ads.readADC_SingleEnded(1);
+  ir3 = ads.readADC_SingleEnded(2);
+  ir4 = ads.readADC_SingleEnded(3);
+}
+
+void autoModeOperation() {
+  int avgLeft = (ir1 + ir2) / 2;
+  int avgRight = (ir3 + ir4) / 2;
+  int diff = avgRight - avgLeft;
+  int threshold = 100;
+
+  if (abs(diff) > threshold) {
+    int directionPercent = map(constrain(diff, -500, 500), -500, 500, 0, 100);
+
+    // Clamp the direction between your desired range (e.g., 20% to 80%)
+    const int MIN_TRACK_PERCENT = 20;
+    const int MAX_TRACK_PERCENT = 80;
+    directionPercent = constrain(directionPercent, MIN_TRACK_PERCENT, MAX_TRACK_PERCENT);
+
+    Serial.printf("Adjusted motor1 to %d%% within range [%d%% - %d%%] (diff: %d)\n",
+                  directionPercent, MIN_TRACK_PERCENT, MAX_TRACK_PERCENT, diff);
+    setMotorTargetPosition(1, directionPercent);
+  }
+}
+
+
+void calibrationModeOperation() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    if (input.startsWith("steps1:")) maxStepsMotor1 = input.substring(7).toInt();
+  }
+}
+
+void setupWebServer() {
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
+    String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    .card { background: #eee; padding: 20px; margin-bottom: 20px; border-radius: 10px; }
+    button { padding: 10px; margin: 5px; }
+    .slider { width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>Vertical Blind System</h1>
+
+  <div class="card">
+    <button onclick="setMode('auto')" id="autoBtn">Auto</button>
+    <button onclick="setMode('manual')" id="manualBtn">Manual</button>
+    <button onclick="setMode('calibration')" id="calibBtn">Calibration</button>
+  </div>
+
+  <div class="card" id="manualControl" style="display:none;">
+    <p>Motor1: <span id="motor1Position">-</span>%</p>
+    <input type="range" min="0" max="100" id="motor1Slider" onchange="updateMotor1()" class="slider">
+    <p>Blind Control:</p>
+    <button onclick="controlBlind('open')">Open</button>
+    <button onclick="controlBlind('close')">Close</button>
+  </div>
+
+  <div class="card">
+    <h2>System Status</h2>
+    <p>Current Mode: <span id="currentMode">-</span></p>
+    <p>Blind Status: <span id="blindStatus">-</span></p>
+    <p>Blind Tilt Angle: <span id="motor1PositionStatus">-</span>°</p>
+    <p>Light Sensors:</p>
+    <ul>
+      <li>IR1: <span id="sensor0">-</span></li>
+      <li>IR2: <span id="sensor1">-</span></li>
+      <li>IR3: <span id="sensor2">-</span></li>
+      <li>IR4: <span id="sensor3">-</span></li>
+    </ul>
+  </div>
+
+  <script>
+    function setMode(mode) {
+      fetch('/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'value=' + mode
+      }).then(updateStatus);
+    }
+
+    function updateMotor1() {
+      const val = document.getElementById("motor1Slider").value;
+      fetch('/position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'motor1=' + val
+      });
+    }
+
+    function controlBlind(action) {
+      fetch('/blind', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'action=' + action
+      });
+    }
+
+    function updateStatus() {
+      fetch('/status')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById("currentMode").textContent = data.mode;
+          document.getElementById("blindStatus").textContent = data.blind_status;
+          document.getElementById("motor1PositionStatus").textContent = data.motor1_position;
+          document.getElementById("sensor0").textContent = data.light_sensors[0];
+          document.getElementById("sensor1").textContent = data.light_sensors[1];
+          document.getElementById("sensor2").textContent = data.light_sensors[2];
+          document.getElementById("sensor3").textContent = data.light_sensors[3];
+
+          document.getElementById("autoBtn").className = data.mode === "auto" ? "active" : "";
+          document.getElementById("manualBtn").className = data.mode === "manual" ? "active" : "";
+          document.getElementById("calibBtn").className = data.mode === "calibration" ? "active" : "";
+
+          if (data.mode === "manual") {
+            document.getElementById("manualControl").style.display = "block";
+            document.getElementById("motor1Position").textContent = data.motor1_position;
+            document.getElementById("motor1Slider").value = data.motor1_position;
+          } else {
+            document.getElementById("manualControl").style.display = "none";
+          }
+        });
+    }
+
+    updateStatus();
+    setInterval(updateStatus, 5000);
+  </script>
+</body>
+</html>
+)rawliteral";
+    req->send(200, "text/html", html);
+  });
+
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest* request) {
+    DynamicJsonDocument doc(1024);
+    doc["mode"] = currentMode == MODE_AUTO ? "auto" : (currentMode == MODE_MANUAL ? "manual" : "calibration");
+    doc["blind_status"] = getBlindStatusString();
+    JsonArray sensors = doc.createNestedArray("light_sensors");
+    sensors.add(ir1);
+    sensors.add(ir2);
+    sensors.add(ir3);
+    sensors.add(ir4);
+
+    float rawSteps = stepper1.currentPosition();
+    if (motor1Reverse) rawSteps = maxStepsMotor1 - rawSteps;
+
+    float motorAngle = (360.0 * rawSteps) / STEPS_PER_REVOLUTION;
+    float blindAngle = motorAngle * MOTOR_TO_BLIND_ANGLE_MULTIPLIER;
+    doc["motor1_position"] = round(blindAngle);  // Real-world blind tilt angle in degrees
+
+    String res;
+    serializeJson(doc, res);
+    request->send(200, "application/json", res);
+  });
+
+  server.on("/mode", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (request->hasParam("value", true)) {
+      String val = request->getParam("value", true)->value();
+      if (val == "auto") currentMode = MODE_AUTO;
+      else if (val == "manual") currentMode = MODE_MANUAL;
+      else if (val == "calibration") currentMode = MODE_CALIBRATION;
+      request->send(200, "text/plain", "OK");
+    }
+  });
+
+  server.on("/position", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (request->hasParam("motor1", true)) {
+      int val = constrain(request->getParam("motor1", true)->value().toInt(), 0, 100);
+      setMotorTargetPosition(1, val);
+    }
+    request->send(200, "text/plain", "Motor1 updated");
+  });
+
+  server.on("/blind", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (request->hasParam("action", true)) {
+      String action = request->getParam("action", true)->value();
+      if (action == "open") {
+        stepper2.setSpeed(-1000);
+        stepper3.setSpeed(1000);
+        blindDirection = BLIND_OPENING;
+      } else if (action == "close") {
+        stepper2.setSpeed(1000);
+        stepper3.setSpeed(-1000);
+        blindDirection = BLIND_CLOSING;
+      }
+      request->send(200, "text/plain", "Blind moving");
+    }
+  });
+}
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Light Tracking Vertical Blind System");
-
-  if (!ads.begin()) {
-    Serial.println("Could not find ADS1115. Check wiring!");
-    while (1);
-  }
-  ads.setGain(GAIN_ONE);
+  pinMode(LIMIT_SWITCH_OPEN, INPUT_PULLUP);
+  pinMode(LIMIT_SWITCH_CLOSED, INPUT_PULLUP);
 
   stepper1.setMaxSpeed(MAX_MOTOR_SPEED);
   stepper1.setAcceleration(MAX_MOTOR_ACCEL);
   stepper2.setMaxSpeed(MAX_MOTOR_SPEED);
   stepper2.setAcceleration(MAX_MOTOR_ACCEL);
+  stepper3.setMaxSpeed(MAX_MOTOR_SPEED);
+  stepper3.setAcceleration(MAX_MOTOR_ACCEL);
 
-  setupWiFi();
+  if (!ads.begin()) while (1);
+  ads.setGain(GAIN_ONE);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
+
+  if (!isBlindFullyOpen() && !isBlindFullyClosed()) {
+    stepper2.setSpeed(1000);
+    stepper3.setSpeed(-1000);
+    blindDirection = BLIND_CLOSING;
+  }
+
   setupWebServer();
+  server.begin();
 }
 
 void loop() {
@@ -83,249 +328,28 @@ void loop() {
     lastSensorReadTime = millis();
   }
 
-  if (currentMode != lastMode) {
-    if (currentMode == MODE_CALIBRATION) {
-      stepper1.moveTo(0);
-      stepper2.moveTo(0);
-    }
-    lastMode = currentMode;
-  }
+  if (currentMode == MODE_AUTO && isBlindFullyClosed()) autoModeOperation();
+  if (currentMode == MODE_CALIBRATION) calibrationModeOperation();
 
-  switch (currentMode) {
-    case MODE_AUTO: autoModeOperation(); break;
-    case MODE_MANUAL: break; // Manual mode handled by web slider now
-    case MODE_CALIBRATION: calibrationModeOperation(); break;
+  if (blindDirection == BLIND_OPENING) {
+    if (isBlindFullyOpen()) {
+      stepper2.setSpeed(0);
+      stepper3.setSpeed(0);
+      blindDirection = BLIND_NONE;
+    } else {
+      stepper2.runSpeed();
+      stepper3.runSpeed();
+    }
+  } else if (blindDirection == BLIND_CLOSING) {
+    if (isBlindFullyClosed()) {
+      stepper2.setSpeed(0);
+      stepper3.setSpeed(0);
+      blindDirection = BLIND_NONE;
+    } else {
+      stepper2.runSpeed();
+      stepper3.runSpeed();
+    }
   }
 
   stepper1.run();
-  stepper2.run();
-}
-
-void setupWiFi() {
-  Serial.print("Connecting to WiFi");
-  WiFi.begin(ssid, password);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 5) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("\nWiFi connection failed. Running in offline mode.");
-  }
-}
-
-void setupWebServer() {
-  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-    DynamicJsonDocument doc(1024);
-    doc["mode"] = currentMode == MODE_AUTO ? "auto" : (currentMode == MODE_MANUAL ? "manual" : "calibration");
-    doc["blinds_closed"] = blindsClosed;
-
-    JsonArray sensors = doc.createNestedArray("light_sensors");
-    sensors.add(topLeft);
-    sensors.add(topRight);
-    sensors.add(bottomLeft);
-    sensors.add(bottomRight);
-
-    int motor1Percent = constrain(map(stepper1.currentPosition(), 0, maxSteps, 0, 100), 0, 100);
-    int motor2Percent = constrain(map(stepper2.currentPosition(), 0, maxSteps, 0, 100), 0, 100);
-    doc["motor1_position"] = motor1Percent;
-    doc["motor2_position"] = motor2Percent;
-
-    String response;
-    serializeJson(doc, response);
-    request->send(200, "application/json", response);
-  });
-
-  server.on("/mode", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("value", true)) {
-      String modeStr = request->getParam("value", true)->value();
-      if (modeStr == "auto") currentMode = MODE_AUTO;
-      else if (modeStr == "manual") currentMode = MODE_MANUAL;
-      else if (modeStr == "calibration") currentMode = MODE_CALIBRATION;
-      request->send(200, "text/plain", "Mode updated");
-    } else {
-      request->send(400, "text/plain", "Missing mode value");
-    }
-  });
-
-  server.on("/position", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("motor1", true)) {
-      int motor1Pos = request->getParam("motor1", true)->value().toInt();
-      motor1Pos = constrain(motor1Pos, 0, 100);
-      setMotorTargetPosition(1, motor1Pos);
-    }
-    if (request->hasParam("motor2", true)) {
-      int motor2Pos = request->getParam("motor2", true)->value().toInt();
-      motor2Pos = constrain(motor2Pos, 0, 100);
-      setMotorTargetPosition(2, motor2Pos);
-    }
-    request->send(200, "text/plain", "Position updated");
-  });
-
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String html = R"rawliteral(
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Vertical Blind Control</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { font-family: Arial; margin: 0; padding: 20px; }
-          .card { background: #f0f0f0; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-          button { padding: 10px; margin: 5px; cursor: pointer; }
-          .active { background: #4CAF50; color: white; }
-          .slider { width: 100%; }
-        </style>
-      </head>
-      <body>
-      <h1>Light Tracking Vertical Blind System</h1>
-
-      <div class="card">
-        <h2>Mode Selection</h2>
-        <button id="autoBtn" onclick="setMode('auto')">Automatic</button>
-        <button id="manualBtn" onclick="setMode('manual')">Manual</button>
-        <button id="calibBtn" onclick="setMode('calibration')">Calibration</button>
-      </div>
-
-      <div class="card" id="manualControl" style="display: none;">
-        <h2>Manual Control (Live)</h2>
-        <p>Motor 1: <span id="motor1Position">-</span>%</p>
-        <input type="range" min="0" max="100" value="0" id="motor1Slider" class="slider" onchange="updateMotor1()">
-        <p>Motor 2: <span id="motor2Position">-</span>%</p>
-        <input type="range" min="0" max="100" value="0" id="motor2Slider" class="slider" onchange="updateMotor2()">
-      </div>
-
-      <div class="card">
-        <h2>System Status</h2>
-        <p>Current Mode: <span id="currentMode">-</span></p>
-        <p>Blinds Status: <span id="blindsStatus">-</span></p>
-        <p>Light Sensors:</p>
-        <ul>
-          <li>Top Left: <span id="sensor0">-</span></li>
-          <li>Top Right: <span id="sensor1">-</span></li>
-          <li>Bottom Left: <span id="sensor2">-</span></li>
-          <li>Bottom Right: <span id="sensor3">-</span></li>
-        </ul>
-      </div>
-
-      <script>
-        function setMode(mode) {
-          fetch('/mode', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'value=' + mode }).then(r => { if (r.ok) updateStatus(); });
-        }
-
-        function updateMotor1() {
-          const value = document.getElementById("motor1Slider").value;
-          fetch('/position', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'motor1=' + value });
-        }
-
-        function updateMotor2() {
-          const value = document.getElementById("motor2Slider").value;
-          fetch('/position', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'motor2=' + value });
-        }
-
-        function updateStatus() {
-          fetch('/status')
-            .then(r => r.json())
-            .then(data => {
-              document.getElementById("currentMode").textContent = data.mode;
-              document.getElementById("blindsStatus").textContent = data.blinds_closed ? "Closed" : "Open";
-              document.getElementById("autoBtn").className = data.mode === "auto" ? "active" : "";
-              document.getElementById("manualBtn").className = data.mode === "manual" ? "active" : "";
-              document.getElementById("calibBtn").className = data.mode === "calibration" ? "active" : "";
-
-              for (let i = 0; i < 4; i++) {
-                document.getElementById("sensor" + i).textContent = data.light_sensors[i];
-              }
-
-              if (data.mode === "manual") {
-                document.getElementById("manualControl").style.display = "block";
-                document.getElementById("motor1Position").textContent = data.motor1_position;
-                document.getElementById("motor2Position").textContent = data.motor2_position;
-                document.getElementById("motor1Slider").value = data.motor1_position;
-                document.getElementById("motor2Slider").value = data.motor2_position;
-              } else {
-                document.getElementById("manualControl").style.display = "none";
-              }
-            });
-        }
-
-        updateStatus();
-        setInterval(updateStatus, 5000);
-      </script>
-
-      </body>
-      </html>
-    )rawliteral";
-    request->send(200, "text/html", html);
-  });
-
-  server.begin();
-}
-
-void readLightSensors() {
-  topLeft = ads.readADC_SingleEnded(TOP_LEFT_SENSOR);
-  topRight = ads.readADC_SingleEnded(TOP_RIGHT_SENSOR);
-  bottomLeft = ads.readADC_SingleEnded(BOTTOM_LEFT_SENSOR);
-  bottomRight = ads.readADC_SingleEnded(BOTTOM_RIGHT_SENSOR);
-}
-
-void autoModeOperation() {
-  int avgLight = (topLeft + topRight + bottomLeft + bottomRight) / 4;
-
-  if (avgLight > closeThreshold && !blindsClosed) {
-    closeBlinds();
-    blindsClosed = true;
-    return;
-  }
-  if (avgLight < openThreshold && blindsClosed) {
-    openBlinds();
-    blindsClosed = false;
-    return;
-  }
-
-  int leftAvg = (topLeft + bottomLeft) / 2;
-  int rightAvg = (topRight + bottomRight) / 2;
-  int leftPosition = constrain(map(leftAvg, openThreshold, closeThreshold, 0, 100), 0, 100);
-  int rightPosition = constrain(map(rightAvg, openThreshold, closeThreshold, 0, 100), 0, 100);
-
-  setMotorTargetPosition(1, leftPosition);
-  setMotorTargetPosition(2, rightPosition);
-
-  blindsClosed = false;
-}
-
-void calibrationModeOperation() {
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    if (input.startsWith("steps:")) {
-      maxSteps = input.substring(6).toInt();
-      Serial.print("Max steps set to: ");
-      Serial.println(maxSteps);
-    }
-  }
-}
-
-void setMotorTargetPosition(int motorNumber, int percentage) {
-  long targetSteps = map(percentage, 0, 100, 0, maxSteps);
-  if (motorNumber == 1) {
-    stepper1.moveTo(targetSteps);
-  } else if (motorNumber == 2) {
-    stepper2.moveTo(targetSteps);
-  }
-}
-
-void closeBlinds() {
-  setMotorTargetPosition(1, 100);
-  setMotorTargetPosition(2, 100);
-}
-
-void openBlinds() {
-  setMotorTargetPosition(1, 0);
-  setMotorTargetPosition(2, 0);
 }
