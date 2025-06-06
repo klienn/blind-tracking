@@ -5,8 +5,8 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 
-const char* ssid = "scam ni";
-const char* password = "Walakokabalo0123!";
+const char* ssid = "Gia";
+const char* password = "12345678";
 AsyncWebServer server(80);
 Adafruit_ADS1115 ads;
 
@@ -36,15 +36,19 @@ AccelStepper stepper3(AccelStepper::HALF4WIRE, IN1_3, IN3_3, IN2_3, IN4_3);  // 
 #define MAX_MOTOR_ACCEL 200
 #define SENSOR_READ_INTERVAL 5000
 
-int maxStepsMotor1 = STEPS_PER_REVOLUTION * 9; // 1080 degrees
+int maxStepsMotor1 = STEPS_PER_REVOLUTION * 12;  // 1080 degrees
 bool motor1Reverse = true;
 
-const float MOTOR_TO_BLIND_ANGLE_MULTIPLIER = 90.0 / 1080.0; // mapping from motor rotation to real blind angle
+const float MOTOR_TO_BLIND_ANGLE_MULTIPLIER = 90.0 / 1080.0;  // mapping from motor rotation to real blind angle
 
-enum SystemMode { MODE_AUTO, MODE_MANUAL, MODE_CALIBRATION };
+enum SystemMode { MODE_AUTO,
+                  MODE_MANUAL,
+                  MODE_CALIBRATION };
 SystemMode currentMode = MODE_AUTO;
 
-enum BlindDirection { BLIND_NONE, BLIND_OPENING, BLIND_CLOSING };
+enum BlindDirection { BLIND_NONE,
+                      BLIND_OPENING,
+                      BLIND_CLOSING };
 BlindDirection blindDirection = BLIND_NONE;
 
 String getBlindStatusString() {
@@ -56,6 +60,7 @@ String getBlindStatusString() {
 }
 
 int16_t ir1 = 0, ir2 = 0, ir3 = 0, ir4 = 0;
+int16_t smooth_ir1 = 0, smooth_ir2 = 0, smooth_ir3 = 0, smooth_ir4 = 0;
 unsigned long lastSensorReadTime = 0;
 
 bool isBlindFullyClosed() {
@@ -93,30 +98,52 @@ void setMotorTargetPosition(int motorNumber, int percentage) {
 }
 
 void readLightSensors() {
-  ir1 = ads.readADC_SingleEnded(0);
-  ir2 = ads.readADC_SingleEnded(1);
-  ir3 = ads.readADC_SingleEnded(2);
-  ir4 = ads.readADC_SingleEnded(3);
+  const float alpha = 0.4;  // smoothing factor (0 = slow react, 1 = no smoothing)
+
+  // Raw readings
+  int16_t raw1 = ads.readADC_SingleEnded(0);
+  int16_t raw2 = ads.readADC_SingleEnded(1);
+  int16_t raw3 = ads.readADC_SingleEnded(2);
+  int16_t raw4 = ads.readADC_SingleEnded(3);
+
+  // Apply exponential smoothing
+  smooth_ir1 = alpha * raw1 + (1 - alpha) * smooth_ir1;
+  smooth_ir2 = alpha * raw2 + (1 - alpha) * smooth_ir2;
+  smooth_ir3 = alpha * raw3 + (1 - alpha) * smooth_ir3;
+  smooth_ir4 = alpha * raw4 + (1 - alpha) * smooth_ir4;
+
+  // Keep raw readings for status display
+  ir1 = raw1;
+  ir2 = raw2;
+  ir3 = raw3;
+  ir4 = raw4;
 }
 
+
 void autoModeOperation() {
-  int avgLeft = (ir1 + ir2) / 2;
-  int avgRight = (ir3 + ir4) / 2;
-  int diff = avgRight - avgLeft;
-  int threshold = 100;
+  int total = smooth_ir1 + smooth_ir2 + smooth_ir3 + smooth_ir4;
+  if (total == 0) return;
 
-  if (abs(diff) > threshold) {
-    int directionPercent = map(constrain(diff, -500, 500), -500, 500, 0, 100);
+  float weight1 = smooth_ir1 / (float)total;
+  float weight2 = smooth_ir2 / (float)total;
+  float weight3 = smooth_ir3 / (float)total;
+  float weight4 = smooth_ir4 / (float)total;
 
-    // Clamp the direction between your desired range (e.g., 20% to 80%)
-    const int MIN_TRACK_PERCENT = 20;
-    const int MAX_TRACK_PERCENT = 80;
-    directionPercent = constrain(directionPercent, MIN_TRACK_PERCENT, MAX_TRACK_PERCENT);
+  float angle = 0;
 
-    Serial.printf("Adjusted motor1 to %d%% within range [%d%% - %d%%] (diff: %d)\n",
-                  directionPercent, MIN_TRACK_PERCENT, MAX_TRACK_PERCENT, diff);
-    setMotorTargetPosition(1, directionPercent);
+  if (weight4 > 0.5) {
+    angle = 0;  // Fully open
+  } else if ((weight2 + weight3) > 0.6) {
+    angle = 90;  // Closed (facing sun)
+  } else if (weight1 > 0.4) {
+    angle = 45;  // Half-closed
+  } else {
+    float middleWeight = (weight2 + weight3) * 0.5;
+    angle = map(middleWeight * 100, 0, 50, 20, 90);
   }
+
+  int anglePercent = round((angle / 90.0) * 100);
+  setMotorTargetPosition(1, anglePercent);
 }
 
 
@@ -302,7 +329,9 @@ void setup() {
   stepper3.setMaxSpeed(MAX_MOTOR_SPEED);
   stepper3.setAcceleration(MAX_MOTOR_ACCEL);
 
-  if (!ads.begin()) while (1);
+  if (!ads.begin())
+    while (1)
+      ;
   ads.setGain(GAIN_ONE);
 
   WiFi.begin(ssid, password);
