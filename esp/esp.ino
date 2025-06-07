@@ -243,7 +243,7 @@ void setupWebServer() {
 
           if (data.mode === "manual") {
             document.getElementById("manualControl").style.display = "block";
-            document.getElementById("motor1Position").textContent = Math.round(data.motor1_position * 1.8);
+            document.getElementById("motor1Position").textContent = data.motor1_position;
             document.getElementById("motor1Slider").value = data.motor1_position;
           } else {
             document.getElementById("manualControl").style.display = "none";
